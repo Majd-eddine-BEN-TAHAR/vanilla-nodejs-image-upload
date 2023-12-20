@@ -13,7 +13,8 @@ const existsAsync = promisify(fs.exists);
 // Define the directory where uploads will be stored
 const UPLOADS_DIR = path.join(__dirname, "uploads"); // Combine current directory with 'uploads' folder
 const PORT = 3000; // Port number for the HTTP server
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // Max file size set to 5MB
+const MAX_FILE_SIZE = 3 * 1024 * 1024; // Max file size set to 3MB
+const MAX_TOTAL_REQUEST_SIZE = 20 * 1024 * 1024; // Max request size limit (20 MB)
 
 // Ensure that the uploads directory exists
 async function ensureUploadsDir() {
@@ -39,15 +40,18 @@ const server = http.createServer(async (req, res) => {
       await handleFileUpload(req, res);
     } catch (error) {
       // Log and respond to the client in case of an error
-      console.error(error);
-      res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end("Internal Server Error");
+      // Send a 500 Internal Server Error response in case of any unexpected errors
+      sendResponse(
+        res,
+        500,
+        "An error occurred while processing the request",
+        false
+      );
     }
   }
   // Respond with 405 Method Not Allowed for other HTTP methods
   else {
-    res.statusCode = 405;
-    res.end("Method Not Allowed");
+    sendResponse(res, 405, "Method Not Allowed");
   }
 });
 
@@ -56,103 +60,170 @@ server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
 
-// Function to serve the HTML form for file upload
-function serveForm(req, res) {
-  res.writeHead(200, { "Content-Type": "text/html" });
-  res.end(`
-        <form action="/" method="post" enctype="multipart/form-data">
-            <input type="file" name="fileupload">
-            <input type="submit" value="Upload">
-        </form>
-    `);
-}
-
-// Asynchronous function to handle file uploads
 async function handleFileUpload(req, res) {
-  // Check if the uploaded file exceeds the size limit
-  if (req.headers["content-length"] > MAX_FILE_SIZE) {
-    // Respond with 413 Payload Too Large if it does
-    res.writeHead(413, { "Content-Type": "text/plain" });
-    return res.end("File size exceeds limit");
-  }
+  try {
+    // Extract the boundary from the Content-Type header for multipart data
+    let boundary;
 
-  // Extract the boundary from the Content-Type header
-  const boundary = getBoundary(req.headers["content-type"]);
-  // Buffer to store the incoming data chunks
-  const buffer = [];
-
-  // Asynchronously read the data chunks from the request
-  for await (const chunk of req) {
-    buffer.push(chunk);
-  }
-
-  // Concatenate all chunks to form the complete data
-  const data = Buffer.concat(buffer);
-  // Split the data into parts based on the boundary
-  const parts = splitMultipart(data, boundary);
-
-  // Iterate over each part (file)
-  for (const part of parts) {
-    // Check if the part has a filename (indicating it's a file)
-    if (part.filename) {
-      // Validate Image Type
-      const partFileType = await fileType.fromBuffer(part.data);
-      if (!partFileType || !partFileType.mime.startsWith("image/")) {
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        return res.end("Invalid file type. Only image files are allowed.");
-      }
-      // Sanitize the filename to prevent directory traversal attacks
-      const safeFilename = path.basename(part.filename);
-      // Construct the full path to save the file
-      const filePath = path.join(UPLOADS_DIR, safeFilename);
-      // Write the file data to disk
-      await writeFileAsync(filePath, part.data);
-
-      // Respond to the client upon successful upload
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end(`
-        File uploaded successfully: ${safeFilename},
-        Type: ${partFileType.mime}, 
-        Size: ${bytesToKilobytes(part.data.length)} Kb`);
+    try {
+      boundary = getBoundary(req.headers["content-type"]);
+    } catch (error) {
+      // Handle errors from getBoundary
+      return sendResponse(
+        res,
+        400,
+        `Error extracting boundary: ${error.message}`
+      );
     }
+
+    let parts;
+    let totalSize = 0;
+    try {
+      const buffer = []; // Initialize a buffer to store the incoming data chunks
+      // Read data chunks from the request and add them to the buffer
+      for await (const chunk of req) {
+        totalSize = totalSize + chunk.length;
+        if (totalSize > MAX_TOTAL_REQUEST_SIZE) {
+          return sendResponse(res, 413, "Total request size exceeds limit");
+        }
+        buffer.push(chunk);
+      }
+
+      const data = Buffer.concat(buffer); // Concatenate all chunks to form the complete file data
+      parts = splitMultipart(data, boundary); // Split the data into parts based on the boundary
+    } catch (error) {
+      // Handle errors from splitMultipart
+      return sendResponse(
+        res,
+        400,
+        `Error splitting multipart data: ${error.message}`
+      );
+    }
+
+    let uploadResults = []; // Array to store results of each file upload
+    let allFilesValid = true; // Flag to track if all files are valid
+
+    // First, validate all files
+    for (const part of parts) {
+      if (part.filename) {
+        // Checking if the file size exceeded the limit
+        if (part.data.length > MAX_FILE_SIZE) {
+          allFilesValid = false;
+          uploadResults.push({
+            filename: part.filename,
+            error: `File size exceeds ${bytesToKilobytes(
+              MAX_FILE_SIZE
+            )} Kb limit`,
+          });
+          continue;
+        }
+        const partFileType = await fileType.fromBuffer(part.data);
+        if (!partFileType || !partFileType.mime.startsWith("image/")) {
+          // If file is not an image, set flag to false and add error to results
+          allFilesValid = false;
+          uploadResults.push({
+            filename: part.filename,
+            error: "Invalid file type for upload",
+          });
+        } else {
+          // Sanitize filename
+          part.filename = sanitizeFilename(part.filename);
+
+          // Generate a unique filename if there's a collision
+          part.filename = await generateUniqueFilename(part.filename);
+
+          // Add valid file info to results for later processing
+          uploadResults.push({
+            filename: part.filename,
+            type: partFileType.mime,
+            size: bytesToKilobytes(part.data.length) + " Kb",
+            status: "File approved for upload",
+          });
+        }
+      }
+    }
+
+    // If all files are valid, write them to disk
+    if (allFilesValid) {
+      for (const validFile of uploadResults) {
+        const partIndex = parts.findIndex(
+          (part) => part.filename === validFile.filename
+        );
+        const part = parts[partIndex];
+
+        const safeFilename = path.basename(part.filename);
+        const filePath = path.join(UPLOADS_DIR, safeFilename);
+        await writeFileAsync(filePath, part.data);
+        validFile.status = "Uploaded successfully";
+      }
+    }
+
+    // Send a response with the upload results in JSON format
+    sendResponse(res, 200, uploadResults);
+  } catch (error) {
+    // Send a 500 Internal Server Error response in case of any unexpected errors
+    sendResponse(
+      res,
+      500,
+      "An error occurred while processing the request",
+      false
+    );
   }
 }
 
 // Function to extract the boundary from the Content-Type header
 function getBoundary(contentType) {
-  // Split the header string to extract the boundary
-  return contentType.split("; ")[1].split("=")[1];
+  // Robust check for null or undefined contentType
+  if (!contentType) {
+    throw new Error("Content-Type header is missing or undefined");
+  }
+
+  // Using a more explicit search for the boundary key
+  const boundaryPrefix = "boundary=";
+  const boundaryIndex = contentType.indexOf(boundaryPrefix);
+  if (boundaryIndex === -1) {
+    throw new Error("Boundary not found in Content-Type header");
+  }
+
+  // Extracting the boundary value
+  return contentType.substring(boundaryIndex + boundaryPrefix.length);
 }
 
 // Function to split multipart data into parts using the boundary
 function splitMultipart(buffer, boundary) {
-  // Array to hold the parts
-  const parts = [];
-  // Create a buffer from the boundary string
-  const boundaryBuffer = Buffer.from(`--${boundary}`);
+  // Wrap in try-catch for robust error handling
+  try {
+    const parts = [];
+    const boundaryBuffer = Buffer.from(`--${boundary}`);
+    let lastIndex = 0;
+    let start = buffer.indexOf(boundaryBuffer) + boundaryBuffer.length + 2;
+    let end = buffer.indexOf(boundaryBuffer, start);
 
-  // Variables to keep track of positions in the buffer
-  let lastIndex = 0;
-  let start = buffer.indexOf(boundaryBuffer) + boundaryBuffer.length + 2;
-  let end = buffer.indexOf(boundaryBuffer, start);
+    // Checking if the boundary is not found in the buffer
+    if (start === boundaryBuffer.length + 1) {
+      throw new Error("Boundary not found in the buffer");
+    }
 
-  // Iterate over the buffer to extract parts
-  while (end > -1) {
-    // Extract a part of the buffer
-    const partBuffer = buffer.slice(start, end - 4); // -4 to remove the trailing '\r\n'
-    // Parse the part to extract headers and data
-    const part = parsePart(partBuffer);
-    // Add the part to the parts array
-    parts.push(part);
+    while (end > -1) {
+      // Adding check for overlapping boundaries or incorrect parsing
+      if (start >= end) {
+        throw new Error("Overlapping boundaries or incorrect multipart format");
+      }
 
-    // Update positions for the next iteration
-    lastIndex = end + boundaryBuffer.length;
-    start = lastIndex + 2;
-    end = buffer.indexOf(boundaryBuffer, start);
+      const partBuffer = buffer.slice(start, end - 4); // -4 to remove trailing '\r\n'
+      const part = parsePart(partBuffer);
+      parts.push(part);
+
+      lastIndex = end + boundaryBuffer.length;
+      start = lastIndex + 2;
+      end = buffer.indexOf(boundaryBuffer, start);
+    }
+
+    return parts;
+  } catch (error) {
+    // Handling any errors that occur during the parsing process
+    throw new Error(`Error parsing multipart data: ${error.message}`);
   }
-
-  // Return the array of parts
-  return parts;
 }
 
 // Function to parse a part of the multipart data
@@ -223,4 +294,50 @@ function parseHeaders(headersString) {
 
 function bytesToKilobytes(bytes) {
   return (bytes / 1024).toFixed(2); // Convert to KB and round to 2 decimal places
+}
+
+// Generate a unique filename to avoid collisions
+async function generateUniqueFilename(originalFilename) {
+  let counter = 0;
+  let uniqueFilename = originalFilename;
+  while (await existsAsync(path.join(UPLOADS_DIR, uniqueFilename))) {
+    const filenameWithoutExt = path.basename(
+      originalFilename,
+      path.extname(originalFilename)
+    );
+    const fileExtension = path.extname(originalFilename);
+    uniqueFilename = `${filenameWithoutExt}_${++counter}${fileExtension}`;
+    uniqueFilename = sanitizeFilename(uniqueFilename);
+  }
+  return uniqueFilename;
+}
+
+// Sanitize filenames to prevent injection attacks and remove unwanted characters
+function sanitizeFilename(filename) {
+  // Remove path traversal characters like '../'
+  filename = filename.replace(/\.\.\//g, "");
+
+  // Replace non-alphanumeric, non-dot, and non-dash characters with an underscore
+  filename = filename.replace(/[^a-z0-9.-]/gi, "_");
+
+  // Convert to lowercase for consistency
+  return filename.toLowerCase();
+}
+
+// Function to serve the HTML form for file upload
+function serveForm(req, res) {
+  res.writeHead(200, { "Content-Type": "text/html" });
+  res.end(`
+        <form action="/" method="post" enctype="multipart/form-data">
+            <input type="file" name="fileupload" multiple>
+            <input type="submit" value="Upload">
+        </form>
+    `);
+}
+
+// Unified response function
+function sendResponse(res, statusCode, data, isJson = true) {
+  const contentType = isJson ? "application/json" : "text/plain";
+  res.writeHead(statusCode, { "Content-Type": contentType });
+  res.end(isJson ? JSON.stringify(data) : data);
 }
