@@ -79,7 +79,8 @@ async function handleFileUpload(req, res) {
     let parts;
     let totalSize = 0;
     try {
-      const buffer = []; // Initialize a buffer to store the incoming data chunks
+      // Initialize a buffer to store the incoming data chunks
+      const buffer = [];
       // Read data chunks from the request and add them to the buffer
       for await (const chunk of req) {
         totalSize = totalSize + chunk.length;
@@ -191,51 +192,48 @@ function getBoundary(contentType) {
 
 // Function to split multipart data into parts using the boundary
 function splitMultipart(buffer, boundary) {
-  // Wrap in try-catch for robust error handling
   try {
-    const parts = [];
-    const boundaryBuffer = Buffer.from(`--${boundary}`);
-    let lastIndex = 0;
-    let start = buffer.indexOf(boundaryBuffer) + boundaryBuffer.length + 2;
-    let end = buffer.indexOf(boundaryBuffer, start);
+    const parts = []; // Create an array to store the individual parts
+    const boundaryBuffer = Buffer.from(`--${boundary}`); // Convert the boundary string into a Buffer
+
+    let start = buffer.indexOf(boundaryBuffer) + boundaryBuffer.length + 2; // Find the starting position of the first boundary in the buffer
+    let end = buffer.indexOf(boundaryBuffer, start); // Find the ending position of the first part
 
     // Checking if the boundary is not found in the buffer
     if (start === boundaryBuffer.length + 1) {
       throw new Error("Boundary not found in the buffer");
     }
 
+    // Iterate through the buffer to extract parts
     while (end > -1) {
       // Adding check for overlapping boundaries or incorrect parsing
       if (start >= end) {
         throw new Error("Overlapping boundaries or incorrect multipart format");
       }
 
-      const partBuffer = buffer.slice(start, end - 4); // -4 to remove trailing '\r\n'
-      const part = parsePart(partBuffer);
-      parts.push(part);
+      // Extract the part content between start and end
+      const partBuffer = buffer.slice(start, end - 2); // -2 to remove trailing '\r\n'
 
-      lastIndex = end + boundaryBuffer.length;
-      start = lastIndex + 2;
-      end = buffer.indexOf(boundaryBuffer, start);
+      const part = parsePart(partBuffer); // Parse the part content using a function named parsePart
+      parts.push(part); // Add the parsed part to the parts array
+
+      start = end + boundaryBuffer.length + 2; // Move to the start of the next part
+      end = buffer.indexOf(boundaryBuffer, start); // Find the ending position of the next part
     }
 
     return parts;
   } catch (error) {
-    // Handling any errors that occur during the parsing process
+    // Handle errors by re-throwing them with an additional message
     throw new Error(`Error parsing multipart data: ${error.message}`);
   }
 }
 
 // Function to parse a part of the multipart data
 function parsePart(buffer) {
-  // Find the end of the headers section
-  const headersEnd = buffer.indexOf("\r\n\r\n");
-  // Extract the headers string
-  const headersString = buffer.slice(0, headersEnd).toString();
-  // Extract the data part, skipping the headers and two '\r\n'
-  const data = buffer.slice(headersEnd + 4);
-  // Parse the headers string into an object
-  const headers = parseHeaders(headersString);
+  const headersEnd = buffer.indexOf("\r\n\r\n"); // Find the end of the headers section
+  const headersString = buffer.slice(0, headersEnd).toString(); // Extract the headers string
+  const data = buffer.slice(headersEnd + 4); // Extract the data part, skipping the headers and two '\r\n'
+  const headers = parseHeaders(headersString); // Parse the headers string into an object
 
   // Return an object containing the parsed headers, data, and filename (if present)
   return {
@@ -249,37 +247,29 @@ function parsePart(buffer) {
 
 // Function to parse the headers string into an object
 function parseHeaders(headersString) {
-  // Object to hold the parsed headers
-  const headers = {};
-  // Split the string into lines
-  const lines = headersString.split("\r\n");
+  const headers = {}; // Object to hold the parsed headers
+  const lines = headersString.split("\r\n"); // Split the string into lines
 
   // Iterate over each line to parse headers
   lines.forEach((line) => {
-    // Split each line into key and value
-    const parts = line.split(": ");
+    const parts = line.split(": "); // Split each line into key and value
     const header = parts[0].toLowerCase();
     const value = parts[1];
 
     // Check if the current header is 'Content-Disposition'
     if (header === "content-disposition") {
-      // Initialize an empty object to store parsed key-value pairs
-      const disposition = {};
+      const disposition = {}; // Initialize an empty object to store parsed key-value pairs
 
       // Split the header value by '; ' to get individual properties
       value.split("; ").forEach((item) => {
-        // Split each property into key and value
-        const itemParts = item.split("=");
+        const itemParts = item.split("="); // Split each property into key and value
         if (itemParts.length === 2) {
           // Ensure that the property has both key and value
           const key = itemParts[0].trim(); // Remove whitespace from the key
           let val = itemParts[1].trim(); // Remove whitespace from the value
 
-          // Remove any double quotes that might be wrapping the value
-          val = val.replace(/"/g, "");
-
-          // Add the parsed key-value pair to the 'disposition' object
-          disposition[key] = val;
+          val = val.replace(/"/g, ""); // Remove any double quotes that might be wrapping the value
+          disposition[key] = val; // Add the parsed key-value pair to the 'disposition' object
         }
       });
 
@@ -288,8 +278,7 @@ function parseHeaders(headersString) {
     }
   });
 
-  // Return the parsed headers object
-  return headers;
+  return headers; // Return the parsed headers object
 }
 
 function bytesToKilobytes(bytes) {
