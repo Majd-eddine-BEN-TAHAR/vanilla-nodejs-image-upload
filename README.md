@@ -4,7 +4,7 @@ This Node.js project provides a simple HTTP server capable of handling file uplo
 
 ## Features
 
-- File upload functionality with multipart/form-data support.
+- Single and multiple File upload functionality with multipart/form-data support.
 - Image file type validation using the `file-type` library.
 - Size limit enforcement for uploads (5MB maximum).
 - Dynamic creation of an 'uploads' directory if it doesn't exist.
