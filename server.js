@@ -104,6 +104,11 @@ async function handleFileUpload(req, res) {
     let uploadResults = []; // Array to store results of each file upload
     let allFilesValid = true; // Flag to track if all files are valid
 
+    /* ---------textInputs---------------- **/
+    /* ----------------------------------- **/
+    /* ----------------------------------- **/
+    // let textInputs = {}; // Object to store text input values
+
     // First, validate all files
     for (const part of parts) {
       if (part.filename) {
@@ -142,7 +147,20 @@ async function handleFileUpload(req, res) {
           });
         }
       }
+      /* ---------textInputs---------------- **/
+      /* ----------------------------------- **/
+      /* ----------------------------------- **/
+      // else {
+      //   const contentDisposition = part.headers["content-disposition"];
+      //   if (contentDisposition && contentDisposition.name) {
+      //     // Get the name of the text input field
+      //     const inputName = contentDisposition.name;
+      //     // Store the value of the text input in the textInputs object
+      //     textInputs[inputName] = part.data.toString("utf8"); // Convert Buffer to string
+      //   }
+      // }
     }
+    // console.log(textInputs);
 
     // If all files are valid, write them to disk
     if (allFilesValid) {
@@ -318,7 +336,9 @@ function serveForm(req, res) {
   res.writeHead(200, { "Content-Type": "text/html" });
   res.end(`
         <form action="/" method="post" enctype="multipart/form-data">
-            <input type="file" name="fileupload" multiple>
+        <input type="text" name="username" />
+        <textarea name="description"></textarea>    
+        <input type="file" name="fileupload" multiple>
             <input type="submit" value="Upload">
         </form>
     `);
